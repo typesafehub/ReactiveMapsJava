@@ -2,6 +2,7 @@ package backend;
 
 import actors.GeoJsonBot;
 import akka.actor.*;
+import akka.cluster.Cluster;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.geojson.Feature;
 import org.geojson.FeatureCollection;
@@ -33,8 +34,10 @@ public class BotManager extends UntypedActor {
         this.data = data;
     }
 
-    int total = 0;
-    int max = Settings.SettingsProvider.get(getContext().system()).TotalNumberOfBots;
+    private final Object port = Cluster.get(getContext().system()).selfAddress().port().get();
+    private final int max = Settings.SettingsProvider.get(getContext().system()).TotalNumberOfBots;
+
+    private int total = 0;
 
     private static Object TICK = new Object();
 
@@ -66,7 +69,7 @@ public class BotManager extends UntypedActor {
                         LineString route = (LineString) feature.getGeometry();
                         total++;
                         String name = Optional.ofNullable(feature.getProperty("name")).orElse("").toString();
-                        String userId = "bot-" + total + "-" + ThreadLocalRandom.current().nextInt(1000) + "-" + i + "-" +
+                        String userId = "bot-" + total + "-" + port + "-" + ThreadLocalRandom.current().nextInt(1000) + "-" + i + "-" +
                                 Optional.ofNullable(feature.getId()).orElse(Integer.toString(i)) + "-" + name;
                         if (originalTrail) {
                             getContext().actorOf(GeoJsonBot.props(route, 0, 0, userId, regionManagerClient));
