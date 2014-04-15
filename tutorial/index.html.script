@@ -370,7 +370,7 @@
 
     <p>
         The actor class that represents a region is called
-        <a href="#code/app/backend/Region.scala" class="shortcut">Region</a>.  This class has a map called
+        <a href="#code/app/backend/Region.java" class="shortcut">Region</a>.  This class has a map called
         <code>activeUsers</code>, and when it receives the user position, it adds that users position to the map.
     </p>
 
@@ -595,6 +595,7 @@
 0a
 package backend;
 
+import com.fasterxml.jackson.annotation.*;
 import models.backend.LatLng;
 
 public abstract class UserMetaDataProtocol {
@@ -614,7 +615,8 @@ public abstract class UserMetaDataProtocol {
         private final String id;
         private final double distance;
 
-        public GetUser(String id, double distance) {
+        @JsonCreator
+        public User(@JsonProperty("id") String id, @JsonProperty("distance") double distance) {
             this.id = id;
             this.distance = distance;
         }
@@ -632,7 +634,7 @@ public abstract class UserMetaDataProtocol {
         private final String id;
         private final LatLng position;
 
-        public GetUser(String id, LatLng position) {
+        public UpdateUserPosition(String id, LatLng position) {
             this.id = id;
             this.position = position;
         }
@@ -667,11 +669,12 @@ import models.backend.*;
 import akka.actor.*;
 import backend.UserMetaDataProtocol.*;
 import play.libs.F.Tuple;
+import java.util.*;
 
 public class UserMetaData extends UntypedActor {
 
     public static Props props() {
-        return Props.create(Region.class, () -> new UserMetaData());
+        return Props.create(UserMetaData.class, UserMetaData::new);
     }
 
     private final SettingsImpl settings = Settings.SettingsProvider.get(getContext().system());
@@ -689,8 +692,8 @@ public class UserMetaData extends UntypedActor {
         travelled. We'll now implement handling the <code>GetUser</code> message in the <code>receive</code> method:
     </p>
 
-<<app/backend/UserMetaData.scala>>=
-17a
+<<app/backend/UserMetaData.java>>=
+18a
         if (msg instanceof GetUser) {
             GetUser getUser = (GetUser) msg;
             Tuple<LatLng, Double> user = users.get(getUser.getId());
@@ -708,17 +711,17 @@ public class UserMetaData extends UntypedActor {
         <code>UpdateUserPosition</code> message:
     </p>
 
-<<app/backend/UserMetaData.scala>>=
-26a
+<<app/backend/UserMetaData.java>>=
+27a
         else if (msg instanceof UpdateUserPosition) {
             UpdateUserPosition update = (UpdateUserPosition) msg;
             Tuple<LatLng, Double> user = users.get(update.getId());
             if (user != null) {
                 users.put(update.getId(), new Tuple<>(update.getPosition(),
-                    user._2 + settings.GeoFunctions().distanceBetweenPoints(user._1, update.getPosition())
+                    user._2 + settings.GeoFunctions.distanceBetweenPoints(user._1, update.getPosition())
                 ));
             } else {
-                users.put(update.getId(), new Tuple<>(update.getPosition(), 0));
+                users.put(update.getId(), new Tuple<>(update.getPosition(), 0d));
             }
         }
 .
@@ -743,12 +746,15 @@ public class UserMetaData extends UntypedActor {
 
     <p>
         The web client is initialised by a Play plugin called <code>Actors</code>.  In this class, add a
-        new <code>lazy val</code> to initialise the user meta data actor:
+        new variable for the user meta data actor and start it in the <code>onStart</code> method:
     </p>
 
-<<app/actors/Actors.scala>>=
-46a
-  private lazy val userMetaData = system.actorOf(UserMetaData.props, "userMetaData")
+<<app/actors/Actors.java>>=
+33a
+    private ActorRef userMetaData;
+.
+43a
+        userMetaData = system.actorOf(UserMetaData.props(), "userMetaData");
 .
 @
 
@@ -757,26 +763,33 @@ public class UserMetaData extends UntypedActor {
         <code>regionManagerClient</code> is made accessible:
     </p>
 
-<<app/actors/Actors.scala>>=
-20a
-  def userMetaData(implicit app: Application) = actors.userMetaData
+<<app/actors/Actors.java>>=
+30a
+    public static ActorRef userMetaData() {
+        return actors().userMetaData;
+    }
+
 .
 @
 
     <p>
-        You may need to add imports to the class to import the <code>backend.UserMetaData</code> class.
-    </p>
-
-    <p>
         The class that will ultimately use this actor is the
-        <code>ClientConnection.scala</code> actor.  Open it,
+        <code>ClientConnection.java</code> actor.  Open it,
         and modify the constructor of <code>ClientConnection</code> to accept it as a parameter:
     </p>
 
-<<app/actors/ClientConnection.scala>>=
-104c
-class ClientConnection(email: String, upstream: ActorRef, regionManagerClient: ActorRef,
-  userMetaData: ActorRef) extends Actor {
+<<app/actors/ClientConnection.java>>=
+33,40c
+    private final ActorRef userMetaData;
+
+    private ClientConnection(String email, ActorRef upstream, ActorRef regionManagerClient, ActorRef userMetaData) {
+        this.email = email;
+        this.upstream = upstream;
+        this.regionManagerClient = regionManagerClient;
+        this.userMetaData = userMetaData;
+
+        this.subscriber = getContext().actorOf(PositionSubscriber.props(self()), "positionSubscriber");
+    }
 .
 @
 
@@ -785,26 +798,28 @@ class ClientConnection(email: String, upstream: ActorRef, regionManagerClient: A
         message to the <code>regionManagerClient</code>, we also want to update the user meta data:
     </p>
 
-<<app/actors/ClientConnection.scala>>=
-9a
-import backend.UserMetaData.UpdateUserPosition
+<<app/actors/ClientConnection.java>>=
+7a
+import backend.UserMetaDataProtocol.UpdateUserPosition;
 .
-116a
-      userMetaData ! UpdateUserPosition(email, point.coordinates)
+51,52c
+                LatLng position = LatLng.fromLngLatAlt(userMoved.getPosition().getCoordinates());
+                regionManagerClient.tell(new PointOfInterest.UserPosition(email, System.currentTimeMillis(),
+                        position), self());
+                userMetaData.tell(new UpdateUserPosition(email, position), self());
 .
 @
 
     <p>
         Since we added a constructor parameter to the <code>ClientConnection</code> actor, we also need to update its
-        <code>props</code> method on the companion object to also accept and pass the user meta data actor:
+        <code>props</code> method to also accept and pass the user meta data actor:
     </p>
 
-<<app/actors/ClientConnection.scala>>=
-13,16c
-  def props(email: String, upstream: ActorRef, regionManagerClient: ActorRef,
-      userMetaData: ActorRef): Props = {
-    Props(new ClientConnection(email, upstream, regionManagerClient, userMetaData))
-  }
+<<app/actors/ClientConnection.java>>=
+26,28c
+    public static Props props(String email, ActorRef upstream, ActorRef regionManagerClient, ActorRef userMetaData) {
+        return Props.create(ClientConnection.class, () -> new ClientConnection(email, upstream, regionManagerClient, userMetaData));
+    }
 .
 @
 
@@ -814,11 +829,10 @@ import backend.UserMetaData.UpdateUserPosition
         <code>userMetaData</code> method on <code>Actors</code> that we just wrote:
     </p>
 
-<<app/controllers/Application.scala>>=
-20,22c
-  def stream(email: String) = WebSocketActor.actorOf[ClientEvent] { _ => upstream =>
-    ClientConnection.props(email, upstream, Actors.regionManagerClient, Actors.userMetaData)
-  }
+<<app/controllers/Application.java>>=
+21c
+      return WebSocket.withActor(upstream -> ClientConnection.props(email, upstream, Actors.regionManagerClient(),
+              Actors.userMetaData()));
 .
 @
 
@@ -826,13 +840,16 @@ import backend.UserMetaData.UpdateUserPosition
 
     <p>
         The web front end is set to go, but the bots also need to be updated.  As with <code>ClientConnection</code>,
-        add a constructor parameter for the user meta data to <code>GeoJsonBot.scala</code>:
+        add a constructor parameter for the user meta data to <code>GeoJsonBot.java</code>:
     </p>
 
-<<app/actors/GeoJsonBot.scala>>=
-23,24c
-class GeoJsonBot(trail: LineString[LatLng], offset: (Double, Double), userId: String,
-  regionManagerClient: ActorRef, userMetaData: ActorRef) extends Actor {
+<<app/actors/GeoJsonBot.java>>=
+30,31c
+    private final ActorRef userMetaData;
+
+    public GeoJsonBot(LineString trail, double offsetLat, double offsetLng, String userId, ActorRef regionManagerClient,
+            ActorRef userMetaData) {
+        this.userMetaData = userMetaData;
 .
 @
 
@@ -841,12 +858,15 @@ class GeoJsonBot(trail: LineString[LatLng], offset: (Double, Double), userId: St
         send one to <code>userMetaData</code>:
     </p>
 
-<<app/actors/GeoJsonBot.scala>>=
-10a
-import backend.UserMetaData.UpdateUserPosition
+<<app/actors/GeoJsonBot.java>>=
+3a
+import backend.UserMetaDataProtocol.UpdateUserPosition;
 .
-50a
-      userMetaData ! UpdateUserPosition(userId, userPos.position)
+65,67c
+            LatLng position = new LatLng(c.getLatitude() + offsetLat, c.getLongitude() + offsetLng);
+            UserPosition userPos = new UserPosition(userId, System.currentTimeMillis(), position);
+            regionManagerClient.tell(userPos, self());
+            userMetaData.tell(new UpdateUserPosition(userId, position), self());
 .
 @
 
@@ -854,11 +874,13 @@ import backend.UserMetaData.UpdateUserPosition
         Update the props method:
     </p>
 
-<<app/actors/GeoJsonBot.scala>>=
-14,15c
-  def props(trail: LineString[LatLng], offset: (Double, Double), userId: String, regionManagerClient: ActorRef,
-      userMetaData: ActorRef): Props =
-    Props(classOf[GeoJsonBot], trail, offset, userId, regionManagerClient, userMetaData)
+<<app/actors/GeoJsonBot.java>>=
+19,21c
+    public static Props props(LineString trail, double offsetLat, double offsetLng, String userId,
+                              ActorRef regionManagerClient, ActorRef userMetaData) {
+        return Props.create(GeoJsonBot.class, () -> new GeoJsonBot(trail, offsetLat, offsetLng, userId,
+                regionManagerClient, userMetaData));
+    }
 .
 @
 
@@ -867,16 +889,30 @@ import backend.UserMetaData.UpdateUserPosition
         the call that creates the bot:
     </p>
 
-<<app/backend/BotManager.scala>>=
-16,17c
-  def props(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Seq[URL]): Props =
-    Props(classOf[BotManager], regionManagerClient, userMetaData, data)
+<<app/backend/BotManager.java>>=
+25,35c
+    public static Props props(ActorRef regionManagerClient, ActorRef userMetaData, List<URL> data) {
+        return Props.create(BotManager.class, () -> new BotManager(regionManagerClient, userMetaData, data));
+    }
+
+    private final ActorRef regionManagerClient;
+    private final ActorRef userMetaData;
+    private final List<URL> data;
+
+    public BotManager(ActorRef regionManagerClient, ActorRef userMetaData, List<URL> data) {
+        this.regionManagerClient = regionManagerClient;
+        this.userMetaData = userMetaData;
+        this.data = data;
+    }
 .
-25c
-class BotManager(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Seq[URL]) extends Actor {
-.
-58c
-                    context.actorOf(GeoJsonBot.props(route, offset, userId, regionManagerClient, userMetaData))
+76,82c
+                        if (originalTrail) {
+                            getContext().actorOf(GeoJsonBot.props(route, 0, 0, userId, regionManagerClient, userMetaData));
+                        } else {
+                            getContext().actorOf(GeoJsonBot.props(route,
+                                    ThreadLocalRandom.current().nextDouble() * 15.0,
+                                    ThreadLocalRandom.current().nextDouble() * -30.0, userId, regionManagerClient, userMetaData));
+                        }
 .
 @
 
@@ -885,9 +921,9 @@ class BotManager(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Se
         <code>Actors</code> class, so update that to pass the <code>userMetaData</code>:
     </p>
 
-<<app/actors/Actors.scala>>=
-43c
-      system.actorOf(BotManager.props(regionManagerClient, userMetaData, findUrls(1)))
+<<app/actors/Actors.java>>=
+63c
+            system.actorOf(BotManager.props(regionManagerClient, userMetaData, urls));
 .
 @
 
@@ -897,9 +933,9 @@ class BotManager(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Se
         creating <code>RegionManagerClient</code>:
     </p>
 
-<<app/backend/Main.scala>>=
-30a
-      val userMetaData = system.actorOf(UserMetaData.props, "userMetaData")
+<<app/backend/Main.java>>=
+35a
+            ActorRef userMetaData = system.actorOf(UserMetaData.props(), "userMetaData");
 .
 @
 
@@ -907,9 +943,9 @@ class BotManager(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Se
         Now pass the actor to the <code>BotsManager</code> props methed:
     </p>
 
-<<app/backend/Main.scala>>=
-38c
-      system.actorOf(BotManager.props(regionManagerClient, userMetaData, findUrls(1)))
+<<app/backend/Main.java>>=
+46c
+            system.actorOf(BotManager.props(regionManagerClient, userMetaData, urls));
 .
 @
 
@@ -927,90 +963,46 @@ class BotManager(regionManagerClient: ActorRef, userMetaData: ActorRef, data: Se
     </p>
 
     <p>
-        Create a new Scala class called <code>controllers.UserController</code>:
+        Create a new Java class called <code>controllers.UserController</code>:
     </p>
 
-<<app/controllers/UserController.scala>>=
+<<app/controllers/UserController.java>>=
 0a
-package controllers
+package controllers;
 
-import akka.pattern.{AskTimeoutException, ask}
-import akka.util.Timeout
+import actors.Actors;
+import static akka.pattern.Patterns.ask;
 
-import play.api.mvc._
-import play.api.libs.concurrent.Execution.Implicits._
-import play.api.libs.json.Json
-import play.api.Play.current
+import backend.UserMetaDataProtocol.*;
+import play.libs.F.*;
+import play.libs.Json;
+import play.mvc.*;
 
-import scala.concurrent.duration._
 
-import actors.Actors
-import backend.UserMetaData._
-
-object UserController extends Controller {
+public class UserController extends Controller {
 
 }
 .
 @
 
     <p>
-        There are quite a number of imports here, but don't be put off!  The first thing we will do is define the
-        return format for the user meta data.  We're going to return JSON, so we need something to convert instances of
-        <code>User</code> into JSON.  We can do this by implementing a JSON <code>Writes</code> for <code>User</code>.
-        Play's JSON API provides a handy macro that does this for you at compile time, so you can have type safe JSON
-        converters with a minimum of code.  Create this writes instance in the <code>UserController</code> object:
+        Now implement an action that does an ask on the user meta data actor for the user, and serialises it out as
+        JSON:
     </p>
 
-<<app/controllers/UserController.scala>>=
-17a
-implicit val userWrites = Json.writes[User]
+<<app/controllers/UserController.java>>=
+12a
+    public static Promise<Result> get(String id) {
+        Promise<Object> answer =
+                Promise.wrap(ask(Actors.userMetaData(), new GetUser(id), 2000));
+
+        return answer.map(a -> {
+            User user = (User) a;
+            return ok(Json.toJson(user));
+        });
+    }
 .
 @
-
-    <p>
-        Since it is declared to be implicit, it will be used whenever we call a method that requires an implicit writes
-        for <code>User</code>, which the <code>Json.toJson</code> method does in the next block of code that we'll
-        write:
-    </p>
-
-<<app/controllers/UserController.scala>>=
-18a
-  def get(id: String) = Action.async {
-    implicit val timeout = Timeout(2.seconds)
-
-    (Actors.userMetaData ? GetUser(id))
-      .mapTo[User]
-      .map { user =>
-        Ok(Json.toJson(user))
-      } recover {
-        case _: AskTimeoutException => NotFound
-      }
-  }
-.
-@
-
-    <p>
-        Here we have declared the action itself.  It's an asynchronous action, meaning it returns a future.  The action
-        also takes a parameter, the id of the user.  We'll see later how that parameter is passed to the action.
-    </p>
-
-    <p>
-        As a first step we have defined a timeout.  In the code below that, we use the ask pattern, represented by the
-        <code>?</code> operator, to ask the user meta data action for the user.  Akka will not let you ask for something
-        without specifying a timeout, the <code>?</code> parameter takes an implicit timeout, so we've defined that to
-        be two seconds.
-    </p>
-
-    <p>
-        Having asked the actor for a user, we get back a future, and the first thing we do is map it to the type of
-        <code>User</code>.  Then we map that to something that will generate our response, we're returning an
-        <code>Ok</code> response, with the body being the user serialised to JSON.
-    </p>
-
-    <p>
-        Finally, we also want to <code>recover</code> from a timeout.  We assume that if it timed out, it means the
-        user could not be found.
-    </p>
 
     <p>
         The last thing we need to do on the server side is declare how requests will be routed to this action.  We do
@@ -1109,10 +1101,10 @@ define ["leaflet", "markerRenderer", "userInfo"], (Leaflet, renderer, userInfo) 
 
     <p>
         Finally, since we've defined the new <code>userInfo</code> module, we need to declare what the path for that
-        module is.  This can be done in <code>app.coffee</code>:
+        module is.  This can be done in <code>main.coffee</code>:
     </p>
 
-<<app/assets/javascripts/app.coffee>>=
+<<app/assets/javascripts/main.coffee>>=
 13a
     userInfo: "./services/userInfo"
 .
@@ -1126,365 +1118,6 @@ define ["leaflet", "markerRenderer", "userInfo"], (Leaflet, renderer, userInfo) 
         hundreds of metres per second - these bots are designed to provide interesting data, not necessarily realistic
         data.
     </p>
-
-</div>
-
-<div>
-    <h2>Scaling out</h2>
-
-    <p>
-        So now we've implemented something that works on a single node.  However, this application has been designed to
-        scale to millions of users on hundreds of nodes - a feature that only works on a single node will not suffice.
-    </p>
-    
-    <p>
-        The system should also be resilient to system crashes and restarts. To address these issues we will make it
-        persistent and distribute the actors over the backend nodes in the cluster.
-    </p>
-
-</div>
-<div>
-    <h2>Make UserMetaData event sourced</h2>
-
-    <p>
-        The <a href="#code/app/backend/UserMetaData.scala" class="shortcut">UserMetaData</a> actor that we developed
-        previously holds the data for all users, which is obviously not scalable. Instead, let's rewrite the actor
-        to represent the data for one single user. We will use 
-        <a href="http://doc.akka.io/docs/akka/2.3.0/scala/persistence.html" target="_blank">Akka Persistence</a>
-        to make it durable.   
-    </p>
-    
-<<app/backend/UserMetaData.scala>>=
-0,60c
-package backend
-
-import java.net.URLDecoder
-import scala.concurrent.duration._
-import akka.actor.PoisonPill
-import akka.actor.Props
-import akka.actor.ReceiveTimeout
-import akka.contrib.pattern.ShardRegion
-import akka.persistence.EventsourcedProcessor
-import play.extras.geojson.LatLng
-
-object UserMetaData {
-  case class GetUser(id: String)
-  case class User(id: String, distance: Double)
-  case class UpdateUserPosition(id: String, position: LatLng)
-
-  val props = Props[UserMetaData]
-
-  sealed trait Event
-  case class FirstObservation(position: LatLng) extends Event
-  case class Moved(to: LatLng, distance: Double) extends Event
-
-  private case class State(position: Option[LatLng], distance: Double) {
-    def updated(evt: Event): State = evt match {
-      case Moved(to, d)          => copy(distance = distance + d)
-      case FirstObservation(pos) => copy(position = Some(pos))
-    }
-  }
-}
-
-class UserMetaData extends EventsourcedProcessor {
-
-  import UserMetaData._
-
-  val settings = Settings(context.system)
-  val userId = URLDecoder.decode(self.path.name, "utf-8")
-  private var state = State(None, 0.0)
-
-  // passivate the entity when no activity
-  context.setReceiveTimeout(30.seconds)
-
-  override def receiveRecover: Receive = {
-    case evt: Event => state = state.updated(evt)
-  }
-
-  override def receiveCommand: Receive = {
-    case _: GetUser =>
-      sender() ! User(userId, state.distance)
-
-    case UpdateUserPosition(_, position) =>
-      state match {
-        case State(Some(lastPosition), _) =>
-          val d = settings.GeoFunctions.distanceBetweenPoints(lastPosition, position)
-          persist(Moved(position, d)) { evt =>
-            state = state.updated(evt)
-          }
-        case State(None, _) =>
-          persist(FirstObservation(position)) { evt =>
-            state = state.updated(evt)
-          }
-      }
-      
-    case ReceiveTimeout => 
-      context.parent ! ShardRegion.Passivate(stopMessage = PoisonPill)
-  }
-}
-.
-@
-
-@@ sbt compile
-    
-    <p>
-        Akka Persistence takes an event sourced approach and stores the changes that build up its current state.
-        In this case the current position and the total distance is stored by the events
-        <code>FirstObservation</code> and <code>Moved</code>.
-    </p>
-    
-    <p>
-        It is recommended to encapsulate the state in an immutable class as illustrated
-        in the <code>UserMetaData.State</code> class. It knows how to create a new <code>State</code>
-        instance when applying the changes represented by domain events. It is important that the
-        state updates are free from side effect, because they are applied when the actor
-        is recovered from the persisted events. See <code>receiveRecover</code>.
-    </p>
-</div>
-<div>
-    <h2>Add sharding</h2>    
-    
-    <p>
-        <a href="http://doc.akka.io/docs/akka/2.3.0/contrib/cluster-sharding.html" target="_blank">Akka cluster Sharding</a>
-        is useful when you need to distribute actors across several nodes in the cluster and want to
-        be able to interact with them using their logical identifier, but without having to care about
-        their physical location in the cluster, which might also change over time.
-    </p>
-    
-    <p>
-        To use the <code>UserMetaData</code> actor with cluster sharding we must be able to 
-        extract the identifier from the messages and define a hash function for the identifier.
-        The hash function is used to group actors into shards, potentially running on different
-        nodes.
-        Those functions can be defined in the companion object like this:
-    </p>
-
-<<app/backend/UserMetaData.scala>>=
-13,15c
-  sealed trait Command {
-    def id: String
-  }
-  case class GetUser(id: String) extends Command
-  case class User(id: String, distance: Double) extends Command
-  case class UpdateUserPosition(id: String, position: LatLng) extends Command
-
-  val idExtractor: ShardRegion.IdExtractor = {
-    case cmd: Command => (cmd.id, cmd)
-  }
-
-  val shardResolver: ShardRegion.ShardResolver = msg => msg match {
-    case cmd: Command => (math.abs(cmd.id.hashCode) % 100).toString
-  }
-
-  val shardName: String = "UserMetaData"
-.
-@
-
-@@ sbt compile
-
-    <p>
-       To make the <code>UserMetaData</code> actors sharded in the cluster we need to register it to the 
-       <code>ClusterSharding</code> extension. This must be done on all nodes in the cluster,
-       but we do it slightly different on the nodes with <code>frontend</code> role compared to 
-       <code>backend</code> because the actors must only be created on the backend nodes, and only
-       proxied from frontend nodes. Add the following in <a href="#code/app/actors/Actors.scala" class="shortcut">Actors.scala</a> 
-    </p>
-
-<<app/actors/Actors.scala>>=
-7a
-import akka.contrib.pattern.ClusterSharding
-.
-@
-
-<<app/actors/Actors.scala>>=
-35,37c
-    if (Cluster(system).selfRoles.exists(r => r.startsWith("backend"))) {
-      system.actorOf(RegionManager.props(), "regionManager")
-      
-      ClusterSharding(system).start(
-        typeName = UserMetaData.shardName,
-        entryProps = Some(UserMetaData.props),
-        idExtractor = UserMetaData.idExtractor,
-        shardResolver = UserMetaData.shardResolver)
-    } else {
-      ClusterSharding(system).start(
-        typeName = UserMetaData.shardName,
-        entryProps = None,
-        idExtractor = UserMetaData.idExtractor,
-        shardResolver = UserMetaData.shardResolver)
-    }
-.
-@
-
-<<app/actors/Actors.scala>>=
-61c
-  private lazy val userMetaData = ClusterSharding(system).shardRegion(UserMetaData.shardName)
-.
-@
-
-
-@@ sbt compile
-
-    <p>
-        And corresponding in <a href="#code/app/backend/Main.scala" class="shortcut">Main.scala</a>:
-    </p>
-
-<<app/backend/Main.scala>>=
-6a
-import akka.contrib.pattern.ClusterSharding
-.
-@
-
-<<app/backend/Main.scala>>=
-27a
-
-      ClusterSharding(system).start(
-        typeName = UserMetaData.shardName,
-        entryProps = Some(UserMetaData.props),
-        idExtractor = UserMetaData.idExtractor,
-        shardResolver = UserMetaData.shardResolver)
-.
-@
-
-<<app/backend/Main.scala>>=    
-38c
-
-      ClusterSharding(system).start(
-        typeName = UserMetaData.shardName,
-        entryProps = None,
-        idExtractor = UserMetaData.idExtractor,
-        shardResolver = UserMetaData.shardResolver)
-      val userMetaData = ClusterSharding(system).shardRegion(UserMetaData.shardName)
-.
-@
-
-</div>
-<div>
-    <h2>Setup the journal</h2>
-
-@@ sbt compile
-
-    <p>
-        When using Akka Persistence in a cluster we need a journal that is replicated or accessible from all nodes.
-        In this sample we will use a 
-        <a href="http://doc.akka.io/docs/akka/2.3.0/scala/persistence.html#Shared_LevelDB_journal" target="_blank">shared LevelDB journal</a>
-        running on the node with port 2551. This is a single point of failure, and should not be used in production. 
-        A real system would use a <a href="http://akka.io/community/" target="_blank">distributed journal</a>.
-    </p>
-    
-    <p>
-        Add the configuration for the journal:
-    </p>
-
-<<conf/application.conf>>= 
-93a
-
-  persistence {
-    journal.plugin = "akka.persistence.journal.leveldb-shared"
-    journal.leveldb-shared.store {
-      # DO NOT USE 'native = off' IN PRODUCTION !!!
-      native = off
-      dir = "target/shared-journal"
-    }
-    snapshot-store.local.dir = "target/snapshots"
-  }
-.
-@
-
-    <p>
-        Add the file <a href="#code/app/backend/SharedJournalHelper.scala" class="shortcut">app/backend/SharedJournalHelper.scala</a>
-        with the following content:
-
-<<app/backend/SharedJournalHelper.scala>>=
-0a
-package backend
-
-import scala.concurrent.duration._
-import akka.actor.ActorIdentity
-import akka.actor.ActorPath
-import akka.actor.ActorSystem
-import akka.actor.Identify
-import akka.actor.Props
-import akka.pattern.ask
-import akka.persistence.journal.leveldb.SharedLeveldbJournal
-import akka.persistence.journal.leveldb.SharedLeveldbStore
-import akka.util.Timeout
-import akka.cluster.Cluster
-
-object SharedJournalHelper {
-
-  def startupSharedJournal(system: ActorSystem): Unit = {
-    // Start the shared journal one one node (don't crash this SPOF)
-    // This will not be needed with a distributed journal
-    val storePort = 2552
-    if (Cluster(system).selfAddress.port.get == storePort)
-      system.actorOf(Props[SharedLeveldbStore], "store")
-    // register the shared journal
-    import system.dispatcher
-    implicit val timeout = Timeout(10.seconds)
-    val storePath = ActorPath.fromString(s"akka.tcp://${system.name}@127.0.0.1:$storePort/user/store")
-    val f = (system.actorSelection(storePath) ? Identify(None))
-    f.onSuccess {
-      case ActorIdentity(_, Some(ref)) => SharedLeveldbJournal.setStore(ref, system)
-      case _ =>
-        system.log.error("Shared journal not started at {}", storePath)
-        system.shutdown()
-    }
-    f.onFailure {
-      case _ =>
-        system.log.error("Lookup of shared journal at {} timed out", storePath)
-        system.shutdown()
-    }
-  }
-
-}
-.
-@
-
-    <p>
-        Initialize the shared journal in <a href="#code/app/actors/Actors.scala" class="shortcut">Actors.scala</a>
-    </p>
-
-<<app/actors/Actors.scala>>=
-34a
-
-    // This will not be needed with a distributed journal
-    SharedJournalHelper.startupSharedJournal(system)
-
-.
-@
-
-    <p>
-        And corresponding in <a href="#code/app/backend/Main.scala" class="shortcut">Main.scala</a>:
-    </p>
-
-<<app/backend/Main.scala>>=
-25a
-    // This will not be needed with a distributed journal
-    SharedJournalHelper.startupSharedJournal(system)
-
-.
-@
-
-@@ sbt compile
-
-</div>
-<div>
-    <h2>Run it again</h2>
-
-    <p>
-        We have now added scalability and resilience to the new user meta data feature. Try it again, by refreshing your browser
-        at <a href="http://localhost:9000" target="_blank">http://localhost:9000</a>.
-    </p>
-        
-    <p>
-        The files of the shared journal are saved in the target directory and when you restart
-        the application the state is recovered. You can clean the state with:
-    </p>
-
-<pre><code>
-&lt;path to activator dir&gt;/activator clean
-</code></pre>
 
 </div>
 

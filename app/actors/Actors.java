@@ -2,7 +2,7 @@ package actors;
 
 import akka.actor.*;
 import akka.cluster.Cluster;
-import backend.*
+import backend.*;
 import play.Application;
 import play.Play;
 import play.Plugin;
