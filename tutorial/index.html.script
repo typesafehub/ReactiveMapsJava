@@ -595,6 +595,8 @@
 0a
 package backend;
 
+import models.backend.LatLng;
+
 public abstract class UserMetaDataProtocol {
     public static class GetUser {
         private final String id;
@@ -648,27 +650,35 @@ public abstract class UserMetaDataProtocol {
 @
 
     <p>
-        Some of the imports are unused for now, but the important thing to see here is the message types we've defined.
-        This actor will receive <code>UpdateUserPosition</code> messages to update the user position, and will receive
+        We've got three different message types in the protocol for this actor, it will receive
+        <code>UpdateUserPosition</code> messages to update the user position, and will receive
         <code>GetUser</code> messages, and send back <code>User</code> messages to the sender.
     </p>
 
     <p>
-        Now implement the actor itself:
+        Now implement the actor itself in a file called <code>app/backend/UserMetaData.java</code>:
     </p>
 
-<<app/backend/UserMetaData.scala>>=
-12a
-class UserMetaData extends Actor {
+<<app/backend/UserMetaData.java>>=
+0a
+package backend;
 
-  import UserMetaData._
+import models.backend.*;
+import akka.actor.*;
+import backend.UserMetaDataProtocol.*;
+import play.libs.F.Tuple;
 
-  val settings = Settings(context.system)
+public class UserMetaData extends UntypedActor {
 
-  var users = Map.empty[String, (LatLng, Double)]
+    public static Props props() {
+        return Props.create(Region.class, () -> new UserMetaData());
+    }
 
-  def receive = {
-  }
+    private final SettingsImpl settings = Settings.SettingsProvider.get(getContext().system());
+    private final Map<String, Tuple<LatLng, Double>> users = new HashMap<>();
+
+    public void onReceive(Object msg) {
+    }
 }
 .
 @
@@ -680,12 +690,16 @@ class UserMetaData extends Actor {
     </p>
 
 <<app/backend/UserMetaData.scala>>=
-21a
-    case GetUser(id) =>
-      users.get(id) match {
-        case Some((_, distance)) => sender ! User(id, distance)
-        case None => sender ! User(id, 0)
-      }
+17a
+        if (msg instanceof GetUser) {
+            GetUser getUser = (GetUser) msg;
+            Tuple<LatLng, Double> user = users.get(getUser.getId());
+            if (user != null) {
+                sender().tell(new User(getUser.getId(), user._2), self());
+            } else {
+                sender().tell(new User(getUser.getId(), 0), self());
+            }
+        }
 .
 @
 
@@ -695,15 +709,18 @@ class UserMetaData extends Actor {
     </p>
 
 <<app/backend/UserMetaData.scala>>=
-27i
-    case UpdateUserPosition(id, position) =>
-      val distance = users.get(id) match {
-        case Some((lastPosition, lastDistance)) =>
-          lastDistance + settings.GeoFunctions.distanceBetweenPoints(lastPosition, position)
-        case None => 0
-      }
-
-      users += (id -> (position, distance))
+26a
+        else if (msg instanceof UpdateUserPosition) {
+            UpdateUserPosition update = (UpdateUserPosition) msg;
+            Tuple<LatLng, Double> user = users.get(update.getId());
+            if (user != null) {
+                users.put(update.getId(), new Tuple<>(update.getPosition(),
+                    user._2 + settings.GeoFunctions().distanceBetweenPoints(user._1, update.getPosition())
+                ));
+            } else {
+                users.put(update.getId(), new Tuple<>(update.getPosition(), 0));
+            }
+        }
 .
 @
 
